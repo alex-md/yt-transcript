@@ -1,21 +1,8 @@
 import axios from "axios"
 import { extractVideoId } from "../utils/urlValidator"
 
-const YOUTUBE_API_KEY = "AIzaSyAt8PgT4NitpGvgiuKNvl4CNbvQrNPdcQI"
-export const isCaptionsEnabled = async videoId => {
-    const response = await axios.get(
-        `https://www.googleapis.com/youtube/v3/captions?videoId=${videoId}&key=${YOUTUBE_API_KEY}`
-    )
-    return response.data.items && response.data.items.length > 0
-}
-
-export const getTranscript = async videoId => {
-    const response = await axios.get(
-        `https://video.google.com/timedtext?lang=en&v=${videoId}`
-    )
-    const transcript = parseTranscript(response.data)
-    return transcript
-}
+// Use environment variable for API key
+const YOUTUBE_API_KEY = process.env.REACT_APP_YOUTUBE_API_KEY
 
 export const fetchTranscript = async videoUrl => {
     const videoId = extractVideoId(videoUrl)
@@ -23,37 +10,59 @@ export const fetchTranscript = async videoUrl => {
         throw new Error("Invalid YouTube URL")
     }
 
-    return getTranscript(videoId)
+    try {
+        // Get the transcript using the new YouTube Data API v3 endpoint
+        const response = await axios.get(
+            `https://www.googleapis.com/youtube/v3/captions/download`, {
+            params: {
+                videoId: videoId,
+                key: YOUTUBE_API_KEY,
+                tfmt: 'ttml', // Request transcript in TTML format
+                lang: 'en' // Request English captions
+            },
+            headers: {
+                'Accept': 'application/json'
+            }
+        }
+        )
+
+        if (!response.data) {
+            return "No transcript available for this video."
+        }
+
+        return parseTranscript(response.data)
+    } catch (error) {
+        console.error('Error fetching transcript:', error)
+        if (error.response?.status === 403) {
+            return "Error: Unable to access transcript. Please ensure you have configured your YouTube API key."
+        } else if (error.response?.status === 404) {
+            return "No transcript available for this video."
+        }
+        return "Error fetching transcript. Please try again."
+    }
 }
 
 const parseTranscript = data => {
-    const parser = new DOMParser()
-    const xmlDoc = parser.parseFromString(data, "text/xml")
-    const texts = xmlDoc.getElementsByTagName("body")[0]?.childNodes
-
-    if (!texts) {
-        return "No transcript available for this video."
-    }
-
     let transcript = ""
+    try {
+        // Parse TTML format
+        const parser = new DOMParser()
+        const xmlDoc = parser.parseFromString(data, "text/xml")
+        const paragraphs = xmlDoc.getElementsByTagName("p")
 
-    for (let i = 0; i < texts.length; i++) {
-        const textNode = texts[i]
-        if (textNode.nodeName === "s") {
-            const element = textNode
-            const start = element.getAttribute("t") || "0"
-            const duration = element.getAttribute("d")
-            const text = textNode.textContent
-            transcript += `[${formatTime(start)}] ${text}\n`
+        for (let p of paragraphs) {
+            const begin = p.getAttribute("begin")
+            const text = p.textContent
+            if (begin && text) {
+                const timeInSeconds = parseFloat(begin)
+                const minutes = Math.floor(timeInSeconds / 60)
+                const seconds = Math.floor(timeInSeconds % 60)
+                const timestamp = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`
+                transcript += `[${timestamp}] ${text.trim()}\n`
+            }
         }
+    } catch (error) {
+        console.error('Error parsing transcript:', error)
     }
-
     return transcript.trim() || "No transcript available for this video."
-}
-
-const formatTime = time => {
-    const seconds = parseInt(time, 10) / 1000
-    const minutes = Math.floor(seconds / 60)
-    const secs = Math.floor(seconds % 60)
-    return `${minutes}:${secs < 10 ? "0" : ""}${secs}`
 }
